@@ -16,13 +16,40 @@ from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import numpy as np
 import requests as http_requests          # for weather API
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
-from sklearn.linear_model import LinearRegression
-from backend.forecasting_model import run_forecast as _run_forecast
+
+# Heavy imports (numpy, sklearn, forecaster) are deferred to first use
+# to reduce memory footprint and speed up gunicorn worker startup.
+_np = None
+_LinearRegression = None
+_run_forecast = None
+
+
+def _get_np():
+    global _np
+    if _np is None:
+        import numpy
+        _np = numpy
+    return _np
+
+
+def _get_linear_regression():
+    global _LinearRegression
+    if _LinearRegression is None:
+        from sklearn.linear_model import LinearRegression
+        _LinearRegression = LinearRegression
+    return _LinearRegression
+
+
+def _get_run_forecast():
+    global _run_forecast
+    if _run_forecast is None:
+        from backend.forecasting_model import run_forecast
+        _run_forecast = run_forecast
+    return _run_forecast
 
 # Load env vars: check root .env first, then backend/.env
 _env_root = Path(__file__).resolve().parent / ".env"
@@ -838,6 +865,9 @@ def api_predict_surge():
         logs_sorted = sorted(logs, key=lambda x: x["Timestamp"])
         base_ts = logs_sorted[0]["Timestamp"].timestamp()
 
+        np = _get_np()
+        LR = _get_linear_regression()
+
         X = np.array([
             [(lg["Timestamp"].timestamp() - base_ts) / 3600,
              lg["HVAC_Power_kW"],
@@ -846,7 +876,7 @@ def api_predict_surge():
         ])
         y = np.array([lg["Grid_Power_Draw_kW"] for lg in logs_sorted])
 
-        model = LinearRegression()
+        model = LR()
         model.fit(X, y)
 
         last = logs_sorted[-1]
@@ -1608,7 +1638,7 @@ def api_sustainability_kpis():
 def get_forecast():
     """Return the full energy demand forecast report."""
     try:
-        report = _run_forecast()
+        report = _get_run_forecast()()
         return jsonify(report)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -2728,19 +2758,25 @@ def initialise():
             return
         _initialised = True
 
-    _try_connect_mongo()
-    _seed_blocks()
+    try:
+        _try_connect_mongo()
+        _seed_blocks()
 
-    simulator_thread = threading.Thread(target=iot_simulator, daemon=True)
-    simulator_thread.start()
-    print("[Setup] IoT simulator thread launched.")
+        simulator_thread = threading.Thread(target=iot_simulator, daemon=True)
+        simulator_thread.start()
+        print("[Setup] IoT simulator thread launched.")
 
-    iot_logger_thread = threading.Thread(target=_iot_device_logger, daemon=True)
-    iot_logger_thread.start()
-    print("[Setup] IoT device logger thread launched.")
+        iot_logger_thread = threading.Thread(target=_iot_device_logger, daemon=True)
+        iot_logger_thread.start()
+        print("[Setup] IoT device logger thread launched.")
 
-    print(f"[Setup] Storage: {'MongoDB' if USE_MONGO else 'In-Memory (no DB needed)'}")
-    print(f"[Setup] Server: http://{FLASK_HOST}:{FLASK_PORT}")
+        print(f"[Setup] Storage: {'MongoDB' if USE_MONGO else 'In-Memory (no DB needed)'}")
+        print(f"[Setup] Server: http://{FLASK_HOST}:{FLASK_PORT}")
+    except Exception as exc:
+        print(f"[Setup] WARNING — initialise() failed: {exc}")
+        import traceback
+        traceback.print_exc()
+        # App continues — /health will still respond
 
 
 # Run initialise() at import-time so gunicorn workers pick it up

@@ -19,4 +19,6 @@ ENV PORT=5000
 EXPOSE $PORT
 
 # Shell form so $PORT is expanded at runtime
-CMD gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120
+# --preload: import app once in master, fork workers (saves memory)
+# --workers 1: single worker to stay within Railway memory limits
+CMD gunicorn app:app --bind 0.0.0.0:$PORT --preload --workers 1 --threads 4 --timeout 120
