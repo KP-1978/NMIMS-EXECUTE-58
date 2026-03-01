@@ -324,6 +324,12 @@ def _get_today_logs(now):
 # REST API
 # ---------------------------------------------------------------------------
 
+@app.route("/health")
+def health():
+    """Lightweight healthcheck endpoint for Railway / load-balancers."""
+    return jsonify({"status": "ok"}), 200
+
+
 @app.route("/api/info")
 def api_info():
     return jsonify({
