@@ -59,9 +59,10 @@ def fetch_full_weather(lat: float, lon: float) -> dict:
     params = {
         "latitude":  lat,
         "longitude": lon,
-        "current_weather": "true",
-        "hourly": "cloudcover,relativehumidity_2m,visibility,surface_pressure,"
-                  "uv_index,apparent_temperature,windspeed_10m,winddirection_10m",
+        "current": "temperature_2m,relative_humidity_2m,apparent_temperature,"
+                   "weather_code,cloud_cover,surface_pressure,wind_speed_10m,"
+                   "wind_direction_10m,is_day",
+        "hourly": "visibility,uv_index",
         "daily": "sunrise,sunset,uv_index_max",
         "forecast_days": 1,
         "timezone": "auto",
@@ -71,11 +72,11 @@ def fetch_full_weather(lat: float, lon: float) -> dict:
     resp.raise_for_status()
     data = resp.json()
 
-    cw = data["current_weather"]
+    cur = data.get("current", {})
     # Hourly arrays are in the API's local timezone (timezone: "auto"),
     # so derive the local hour from the API's own timestamp.
     try:
-        api_time = cw.get("time", "")          # e.g. "2026-03-01T12:00"
+        api_time = cur.get("time", "")          # e.g. "2026-03-01T12:00"
         hour_now = int(api_time.split("T")[1].split(":")[0])
     except (IndexError, ValueError):
         hour_now = datetime.now(timezone.utc).hour   # fallback
@@ -88,7 +89,7 @@ def fetch_full_weather(lat: float, lon: float) -> dict:
         return arr[hour_now] if hour_now < len(arr) else fallback
 
     # Weather description from WMO code
-    weather_code = cw.get("weathercode", 0)
+    weather_code = cur.get("weather_code", 0)
     description = _WMO_CODES.get(weather_code, f"Code {weather_code}")
 
     # Sunrise / Sunset
@@ -96,14 +97,14 @@ def fetch_full_weather(lat: float, lon: float) -> dict:
     sunset  = (daily.get("sunset") or [""])[0]
 
     return {
-        "temperature_c":     float(cw["temperature"]),
-        "feels_like_c":      float(_h("apparent_temperature", cw["temperature"])),
-        "cloud_cover_pct":   float(_h("cloudcover", 50)),
-        "humidity_pct":      float(_h("relativehumidity_2m", 50)),
-        "wind_speed_kmh":    float(cw.get("windspeed", 0)),
-        "wind_direction_deg": float(cw.get("winddirection", 0)),
-        "wind_direction":    _wind_direction_label(cw.get("winddirection")),
-        "pressure_hpa":      float(_h("surface_pressure", 1013)),
+        "temperature_c":     float(cur.get("temperature_2m", 25)),
+        "feels_like_c":      float(cur.get("apparent_temperature", cur.get("temperature_2m", 25))),
+        "cloud_cover_pct":   float(cur.get("cloud_cover", 0)),
+        "humidity_pct":      float(cur.get("relative_humidity_2m", 30)),
+        "wind_speed_kmh":    float(cur.get("wind_speed_10m", 0)),
+        "wind_direction_deg": float(cur.get("wind_direction_10m", 0)),
+        "wind_direction":    _wind_direction_label(cur.get("wind_direction_10m")),
+        "pressure_hpa":      float(cur.get("surface_pressure", 1013)),
         "visibility_m":      float(_h("visibility", 10000)),
         "uv_index":          float(_h("uv_index", 0)),
         "uv_index_max":      float((daily.get("uv_index_max") or [0])[0]),
@@ -125,7 +126,8 @@ def fetch_live_weather(lat: float, lon: float, api_key: str = None) -> dict:
 
 
 # ─── 2. Estimate Irradiance ─────────────────────────────────────────────────
-def estimate_irradiance(cloud_cover: float, time_of_day: int) -> float:
+def estimate_irradiance(cloud_cover: float, time_of_day: int,
+                        sunrise_hour: float = 6.0, sunset_hour: float = 18.0) -> float:
     """
     Estimate effective solar irradiance (W/m²) from cloud cover and hour.
 
@@ -133,6 +135,8 @@ def estimate_irradiance(cloud_cover: float, time_of_day: int) -> float:
     ----------
     cloud_cover  : float – Cloud cover percentage [0-100].
     time_of_day  : int   – Current hour in 24-h format (0-23, local solar time).
+    sunrise_hour : float – Decimal hour of sunrise (e.g. 6.5 = 06:30). Default 6.0.
+    sunset_hour  : float – Decimal hour of sunset  (e.g. 18.4 = 18:24). Default 18.0.
 
     Returns
     -------
@@ -140,12 +144,12 @@ def estimate_irradiance(cloud_cover: float, time_of_day: int) -> float:
 
     Logic
     -----
-    • Nighttime (before 06:00 or after 18:00): returns 0.
+    • Nighttime (before sunrise or after sunset): returns 0.
     • Daytime:  GHI = CLEAR_SKY_GHI × (1 - cloud_cover/100)
       A simple linear de-rating; sufficient for dashboard-grade simulation.
     """
-    # Night check — panels produce nothing outside daylight window
-    if time_of_day < 6 or time_of_day >= 18:
+    # Night check — panels produce nothing outside actual daylight window
+    if time_of_day < sunrise_hour or time_of_day >= sunset_hour:
         return 0.0
 
     # Clamp cloud cover to [0, 100]
@@ -186,6 +190,15 @@ def calculate_solar_yield(temp_ambient: float, irradiance: float) -> float:
 
 
 # ─── 4. Orchestrator / Public Entry-Point ────────────────────────────────────
+def _parse_sunrise_sunset_hour(iso_str: str, default: float) -> float:
+    """Extract decimal hour from ISO datetime string like '2026-03-01T06:32'."""
+    try:
+        parts = iso_str.split("T")[1].split(":")
+        return int(parts[0]) + int(parts[1]) / 60.0
+    except (IndexError, ValueError):
+        return default
+
+
 def get_dynamic_solar_kw(lat: float, lon: float) -> float:
     """
     End-to-end wrapper: fetch weather → estimate irradiance → compute yield.
@@ -201,12 +214,16 @@ def get_dynamic_solar_kw(lat: float, lon: float) -> float:
             Returns 0.0 gracefully if any upstream call fails.
     """
     try:
-        weather     = fetch_live_weather(lat, lon)
-        temp_c      = weather["temperature_c"]
-        cloud_pct   = weather["cloud_cover_pct"]
+        full_weather = fetch_full_weather(lat, lon)
+        temp_c      = full_weather["temperature_c"]
+        cloud_pct   = full_weather["cloud_cover_pct"]
+
+        # Use actual sunrise/sunset from API for accurate daylight window
+        sr_hour = _parse_sunrise_sunset_hour(full_weather.get("sunrise", ""), 6.0)
+        ss_hour = _parse_sunrise_sunset_hour(full_weather.get("sunset", ""), 18.0)
 
         local_hour  = datetime.now().hour          # local system hour
-        irradiance  = estimate_irradiance(cloud_pct, local_hour)
+        irradiance  = estimate_irradiance(cloud_pct, local_hour, sr_hour, ss_hour)
         power_kw    = calculate_solar_yield(temp_c, irradiance)
 
         return round(power_kw, 2)

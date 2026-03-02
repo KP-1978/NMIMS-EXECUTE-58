@@ -322,14 +322,18 @@ export default function SolarEnergyPage() {
   const location    = live?.location ?? {};
   const uvInfo      = uvLevel(w.uv_index ?? 0);
 
+  /* ── Sunrise / Sunset hours from API (decimal) ───────── */
+  const sunriseHr   = location.sunrise_hour ?? 6.5;
+  const sunsetHr    = location.sunset_hour ?? 18.0;
+
   /* ── Custom calculation using user config ────────────────── */
   const tempC       = w.temperature_c ?? 25;
   const cloudPct    = w.cloud_cover_pct ?? 0;
   const tCell       = tempC + 5;
   const localHour   = live?.local_hour ?? new Date().getHours();
 
-  // Irradiance from weather
-  const rawIrradiance = (localHour >= 6 && localHour < 18)
+  // Irradiance from weather — use actual sunrise/sunset
+  const rawIrradiance = (localHour >= sunriseHr && localHour < sunsetHr)
     ? CLEAR_SKY_GHI * (1 - cloudPct / 100)
     : 0;
 
@@ -355,8 +359,11 @@ export default function SolarEnergyPage() {
   // Daily energy estimate (kWh) — using simple integration of hourly profile
   const dailyKwh = (() => {
     let total = 0;
-    for (let h = 6; h < 18; h++) {
-      const f = Math.sin(((h - 6) / 12) * Math.PI);
+    const srH = Math.ceil(sunriseHr);
+    const ssH = Math.floor(sunsetHr);
+    for (let h = srH; h < ssH; h++) {
+      const dayLen = ssH - srH;
+      const f = Math.sin(((h - srH) / dayLen) * Math.PI);
       const hourIrr = CLEAR_SKY_GHI * f * (1 - cloudPct / 100) * Math.min(tiltFactor, 1);
       const hourPower = config.capacity_kw * (hourIrr / 1000) * config.performance_ratio * tempFactor * invEff * soilingF;
       total += Math.max(0, hourPower);
@@ -404,11 +411,11 @@ export default function SolarEnergyPage() {
     },
     {
       label: "Time-of-Day Factor",
-      impact: localHour >= 6 && localHour < 18 ? +(Math.sin(((localHour - 6) / 12) * Math.PI) * 100).toFixed(0) : 0,
-      description: localHour >= 6 && localHour < 18
+      impact: localHour >= sunriseHr && localHour < sunsetHr ? +(Math.sin(((localHour - sunriseHr) / (sunsetHr - sunriseHr)) * Math.PI) * 100).toFixed(0) : 0,
+      description: localHour >= sunriseHr && localHour < sunsetHr
         ? `Hour ${localHour}:00 — ${localHour >= 10 && localHour <= 14 ? "peak" : "partial"} solar window`
         : "Nighttime — no solar production",
-      type: localHour >= 6 && localHour < 18 ? "positive" : "neutral",
+      type: localHour >= sunriseHr && localHour < sunsetHr ? "positive" : "neutral",
     },
   ];
 
@@ -420,7 +427,10 @@ export default function SolarEnergyPage() {
   /* ── Hourly profile (uses user config) ──────────────────── */
   const hourlyProfile = Array.from({ length: 24 }, (_, h) => {
     let factor = 0;
-    if (h >= 6 && h < 18) factor = Math.sin(((h - 6) / 12) * Math.PI);
+    const srH = Math.ceil(sunriseHr);
+    const ssH = Math.floor(sunsetHr);
+    const dayLen = ssH - srH;
+    if (h >= srH && h < ssH) factor = Math.sin(((h - srH) / dayLen) * Math.PI);
     const clearSkyKw = config.capacity_kw * config.performance_ratio * factor;
     const actualKw = clearSkyKw * (1 - cloudPct / 100) * tempFactor * invEff * soilingF * Math.min(tiltFactor, 1);
     const nowHour = new Date().getHours();
@@ -437,8 +447,14 @@ export default function SolarEnergyPage() {
     const tC = m.avgTemp + 5; // cell temp
     const tf = 1 - gammaFrac * (tC - 25);
     let totalKwh = 0;
-    for (let h = 6; h < 18; h++) {
-      const f = Math.sin(((h - 6) / 12) * Math.PI);
+    // Use approximate sunrise/sunset hours for Indore by month
+    const indoreSunrise = [7.0, 6.8, 6.5, 6.1, 5.8, 5.7, 5.9, 6.0, 6.1, 6.2, 6.5, 6.8];
+    const indoreSunset  = [18.0, 18.3, 18.4, 18.6, 18.9, 19.1, 19.1, 18.9, 18.5, 18.1, 17.8, 17.8];
+    const srH = Math.ceil(indoreSunrise[monthIdx]);
+    const ssH = Math.floor(indoreSunset[monthIdx]);
+    const dayLen = ssH - srH;
+    for (let h = srH; h < ssH; h++) {
+      const f = Math.sin(((h - srH) / dayLen) * Math.PI);
       const hourIrr = CLEAR_SKY_GHI * f * (1 - m.avgCloud / 100) * Math.min(tiltFactor, 1);
       const hourP = capKw * (hourIrr / 1000) * config.performance_ratio * tf * invEff * soilingF;
       totalKwh += Math.max(0, hourP);
@@ -470,8 +486,11 @@ export default function SolarEnergyPage() {
     const blockCap = +(roofArea * (config.panel_efficiency / 100)).toFixed(1);
     const blockDailyKwh = (() => {
       let total = 0;
-      for (let h = 6; h < 18; h++) {
-        const f = Math.sin(((h - 6) / 12) * Math.PI);
+      const srH = Math.ceil(sunriseHr);
+      const ssH = Math.floor(sunsetHr);
+      const dayLen = ssH - srH;
+      for (let h = srH; h < ssH; h++) {
+        const f = Math.sin(((h - srH) / dayLen) * Math.PI);
         const hourIrr = CLEAR_SKY_GHI * f * (1 - cloudPct / 100) * Math.min(tiltFactor, 1);
         const hourP = blockCap * (hourIrr / 1000) * config.performance_ratio * tempFactor * invEff * soilingF;
         total += Math.max(0, hourP);

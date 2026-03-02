@@ -11,6 +11,8 @@ import LandingPage from "./components/LandingPage";
 import LoginPage from "./components/LoginPage";
 import RegisterPage from "./components/RegisterPage";
 import StudentDashboard from "./components/StudentDashboard";
+import ComplaintsPage from "./components/ComplaintsPage";
+import CameraAnalysisPage from "./components/CameraAnalysisPage";
 
 /**
  * App — root component with React Router
@@ -192,6 +194,12 @@ function AdminContent() {
 
       case "solar":
         return <SolarEnergyPage />;
+
+      case "complaints":
+        return <ComplaintsPage />;
+
+      case "camera":
+        return <CameraAnalysisPage />;
 
       case "roi":
         return <ROICalculator />;

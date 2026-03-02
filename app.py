@@ -10,11 +10,14 @@ Works in two modes:
 import math
 import os
 import random
+import sys
 import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
+
+print("[Boot] Starting app import...", flush=True)
 
 import requests as http_requests          # for weather API
 from dotenv import load_dotenv
@@ -72,6 +75,7 @@ SURGE_THRESHOLD_KW = 400
 BUILD_DIR = Path(__file__).resolve().parent / "frontend" / "build"
 app = Flask(__name__, static_folder=None)   # disable default /static
 CORS(app)
+print(f"[Boot] Flask app created. PORT={FLASK_PORT}", flush=True)
 
 # ---------------------------------------------------------------------------
 # Storage — MongoDB or In-Memory
@@ -930,6 +934,7 @@ from backend.solar_energy_analysis import (
     estimate_irradiance,
     calculate_solar_yield,
     get_dynamic_solar_kw,
+    _parse_sunrise_sunset_hour,
     P_CAPACITY,
     CLEAR_SKY_GHI,
     PR,
@@ -955,11 +960,15 @@ def api_solar_live():
         temp_c     = weather["temperature_c"]
         cloud_pct  = weather["cloud_cover_pct"]
 
+        # Use actual sunrise/sunset from API for accurate daylight window
+        sunrise_hr = _parse_sunrise_sunset_hour(weather.get("sunrise", ""), 6.5)
+        sunset_hr  = _parse_sunrise_sunset_hour(weather.get("sunset", ""), 18.0)
+
         local_hour = datetime.now().hour
-        irr        = estimate_irradiance(cloud_pct, local_hour)
+        irr        = estimate_irradiance(cloud_pct, local_hour, sunrise_hr, sunset_hr)
         power_kw   = calculate_solar_yield(temp_c, irr)
         t_cell     = temp_c + 5.0
-        is_night   = (local_hour < 6 or local_hour >= 18)
+        is_night   = (local_hour < sunrise_hr or local_hour >= sunset_hr)
 
         return jsonify({
             "solar_kw":        round(power_kw, 2),
@@ -989,6 +998,8 @@ def api_solar_live():
                 "lat": lat,
                 "lon": lon,
                 "name": "NMIMS Indore" if (lat == _CAMPUS_LAT and lon == _CAMPUS_LON) else f"{lat}°N, {lon}°E",
+                "sunrise_hour": round(sunrise_hr, 2),
+                "sunset_hour":  round(sunset_hr, 2),
             },
         })
     except Exception as exc:
@@ -2726,6 +2737,20 @@ def api_voice_call():
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Serve Analysis Videos from local folder
+# ---------------------------------------------------------------------------
+_VIDEOS_DIR = Path(__file__).resolve().parent / "Analysis Video"
+if not _VIDEOS_DIR.is_dir():
+    _VIDEOS_DIR = Path(__file__).resolve().parent / "frontend" / "public" / "videos"
+
+
+@app.route("/videos/<path:filename>")
+def serve_video(filename):
+    """Serve analysis video files directly."""
+    return send_from_directory(str(_VIDEOS_DIR), filename)
+
+
 # Serve React Frontend  (catch-all MUST be after all /api routes)
 # ---------------------------------------------------------------------------
 @app.route("/", defaults={"path": ""})
@@ -2741,6 +2766,289 @@ def serve_react(path):
         return send_from_directory(str(BUILD_DIR), path)
     # Fall back to index.html for client-side routing
     return send_from_directory(str(BUILD_DIR), "index.html")
+
+
+# ---------------------------------------------------------------------------
+# Complaints System  (Admin + Student Green-Point credits)
+# ---------------------------------------------------------------------------
+_complaints_lock = threading.Lock()
+_complaints = [
+    {
+        "id": "CMP-001",
+        "student_name": "Arjun Mehta",
+        "student_id": "STME-2024-042",
+        "room": "STME Block - Room 102",
+        "category": "AC",
+        "title": "AC still ON in Room 102 after 8 PM",
+        "description": "The AC in Room 102 was running at full capacity even though no students were present after 8 PM. This has been happening for the past 3 days.",
+        "status": "open",
+        "priority": "high",
+        "timestamp": "2026-03-01T20:15:00",
+        "green_points_credited": 0,
+    },
+    {
+        "id": "CMP-002",
+        "student_name": "Priya Sharma",
+        "student_id": "SBM-2024-018",
+        "room": "SBM Block - Computer Lab 3",
+        "category": "PC",
+        "title": "PC power supplies left ON overnight",
+        "description": "All 30 PCs in Computer Lab 3 had their power supplies left ON overnight. Monitors were off but CPUs were still drawing power. Noticed at 6 AM when I came for morning study.",
+        "status": "open",
+        "priority": "critical",
+        "timestamp": "2026-03-01T06:30:00",
+        "green_points_credited": 0,
+    },
+    {
+        "id": "CMP-003",
+        "student_name": "Rohan Patel",
+        "student_id": "SOC-2024-055",
+        "room": "SOC Block - Room 205",
+        "category": "Lights",
+        "title": "Corridor lights ON during daytime",
+        "description": "The corridor lights on the 2nd floor of SOC Block are left ON even during bright sunny daytime. Natural light is sufficient but tube lights are still running.",
+        "status": "open",
+        "priority": "medium",
+        "timestamp": "2026-03-01T11:45:00",
+        "green_points_credited": 0,
+    },
+    {
+        "id": "CMP-004",
+        "student_name": "Sneha Reddy",
+        "student_id": "SOL-2024-031",
+        "room": "SOL Block - Moot Court Hall",
+        "category": "AC",
+        "title": "AC running in empty Moot Court Hall",
+        "description": "The Moot Court Hall AC was running for the entire weekend when no events were scheduled. Temperature was set to 18°C.",
+        "status": "open",
+        "priority": "high",
+        "timestamp": "2026-02-28T09:00:00",
+        "green_points_credited": 0,
+    },
+    {
+        "id": "CMP-005",
+        "student_name": "Vikram Singh",
+        "student_id": "SPTM-2024-022",
+        "room": "SPTM Block - Lab 101",
+        "category": "Equipment",
+        "title": "Lab equipment left ON after practicals",
+        "description": "Centrifuges and water baths in Lab 101 were left running after the 4 PM practical session ended. Found them still ON at 9 PM.",
+        "status": "open",
+        "priority": "high",
+        "timestamp": "2026-02-28T21:10:00",
+        "green_points_credited": 0,
+    },
+    {
+        "id": "CMP-006",
+        "student_name": "Ananya Iyer",
+        "student_id": "STME-2024-067",
+        "room": "STME Block - Seminar Hall",
+        "category": "Projector",
+        "title": "Projector and speakers left ON overnight",
+        "description": "After the guest lecture, the projector, speakers, and mic system in the Seminar Hall were never turned off. Found them ON the next morning.",
+        "status": "closed",
+        "priority": "medium",
+        "timestamp": "2026-02-27T08:30:00",
+        "closed_at": "2026-02-27T10:00:00",
+        "green_points_credited": 50,
+    },
+    {
+        "id": "CMP-007",
+        "student_name": "Karan Desai",
+        "student_id": "SBM-2024-044",
+        "room": "SBM Block - Room 301",
+        "category": "Fan",
+        "title": "Ceiling fans running in empty classroom",
+        "description": "All 6 ceiling fans in Room 301 were running at full speed with no students present. The room was locked but fans were ON.",
+        "status": "closed",
+        "priority": "low",
+        "timestamp": "2026-02-26T16:20:00",
+        "closed_at": "2026-02-26T17:00:00",
+        "green_points_credited": 50,
+    },
+]
+_next_complaint_id = 8
+
+
+@app.route("/api/complaints", methods=["GET"])
+def get_complaints():
+    """Return all complaints, optionally filtered by status."""
+    status_filter = request.args.get("status")
+    with _complaints_lock:
+        if status_filter:
+            filtered = [c for c in _complaints if c["status"] == status_filter]
+        else:
+            filtered = list(_complaints)
+    return jsonify(filtered)
+
+
+@app.route("/api/complaints/<complaint_id>/close", methods=["POST"])
+def close_complaint(complaint_id):
+    """Close a complaint and credit 50 Green Points to the student."""
+    global _next_complaint_id
+    with _complaints_lock:
+        for c in _complaints:
+            if c["id"] == complaint_id:
+                if c["status"] == "closed":
+                    return jsonify({"error": "Complaint already closed"}), 400
+                c["status"] = "closed"
+                c["closed_at"] = datetime.now().isoformat()
+                c["green_points_credited"] = 50
+                return jsonify({
+                    "status": "ok",
+                    "message": f"Complaint {complaint_id} closed. 50 Green Points credited to {c['student_name']}.",
+                    "complaint": c,
+                })
+    return jsonify({"error": "Complaint not found"}), 404
+
+
+# ---------------------------------------------------------------------------
+# AI Camera Analysis  (Monitoring logs + video list)
+# ---------------------------------------------------------------------------
+_camera_analysis_log = {
+    "timestamp": "2026-03-01T04:49:27.771219",
+    "total_alerts": 11,
+    "waste_kwh": 1.995322,
+    "waste_inr": 15.9626,
+    "alert_log": [
+        {
+            "time": "04:44:18", "severity": "HIGH",
+            "message": "Lights ON with zero occupancy detected",
+            "action": "Turn OFF ceiling lights. Enable auto-switch.",
+            "room_state": "EMPTY_LIGHTS_ON", "empty_sec": 5.0,
+            "load_kw": 18.15, "idle_kw": 9.0, "wasted_kw": 9.15,
+            "monthly_inr": 17568.0, "co2_hr": 7.503,
+        },
+        {
+            "time": "04:44:26", "severity": "HIGH",
+            "message": "Lights ON with zero occupancy detected",
+            "action": "Turn OFF ceiling lights. Enable auto-switch.",
+            "room_state": "EMPTY_LIGHTS_ON", "empty_sec": 13.1,
+            "load_kw": 18.41, "idle_kw": 9.0, "wasted_kw": 9.41,
+            "monthly_inr": 18067.0, "co2_hr": 7.716,
+        },
+        {
+            "time": "04:44:34", "severity": "HIGH",
+            "message": "Lights ON with zero occupancy detected",
+            "action": "Turn OFF ceiling lights. Enable auto-switch.",
+            "room_state": "EMPTY_LIGHTS_ON", "empty_sec": 21.1,
+            "load_kw": 18.24, "idle_kw": 9.0, "wasted_kw": 9.24,
+            "monthly_inr": 17741.0, "co2_hr": 7.577,
+        },
+        {
+            "time": "04:44:42", "severity": "HIGH",
+            "message": "Lights ON with zero occupancy detected",
+            "action": "Turn OFF ceiling lights. Enable auto-switch.",
+            "room_state": "EMPTY_LIGHTS_ON", "empty_sec": 29.1,
+            "load_kw": 18.07, "idle_kw": 9.0, "wasted_kw": 9.07,
+            "monthly_inr": 17414.0, "co2_hr": 7.437,
+        },
+        {
+            "time": "04:44:50", "severity": "HIGH",
+            "message": "Lights ON with zero occupancy detected",
+            "action": "Turn OFF ceiling lights. Enable auto-switch.",
+            "room_state": "EMPTY_LIGHTS_ON", "empty_sec": 37.1,
+            "load_kw": 18.47, "idle_kw": 9.0, "wasted_kw": 9.47,
+            "monthly_inr": 18182.0, "co2_hr": 7.765,
+        },
+        {
+            "time": "04:44:58", "severity": "HIGH",
+            "message": "Lights ON with zero occupancy detected",
+            "action": "Turn OFF ceiling lights. Enable auto-switch.",
+            "room_state": "EMPTY_LIGHTS_ON", "empty_sec": 45.2,
+            "load_kw": 18.23, "idle_kw": 9.0, "wasted_kw": 9.23,
+            "monthly_inr": 17722.0, "co2_hr": 7.569,
+        },
+        {
+            "time": "04:45:06", "severity": "HIGH",
+            "message": "Lights ON with zero occupancy detected",
+            "action": "Turn OFF ceiling lights. Enable auto-switch.",
+            "room_state": "EMPTY_LIGHTS_ON", "empty_sec": 53.3,
+            "load_kw": 18.27, "idle_kw": 9.0, "wasted_kw": 9.27,
+            "monthly_inr": 17798.0, "co2_hr": 7.601,
+        },
+        {
+            "time": "04:45:14", "severity": "HIGH",
+            "message": "Lights ON with zero occupancy detected",
+            "action": "Turn OFF ceiling lights. Enable auto-switch.",
+            "room_state": "EMPTY_LIGHTS_ON", "empty_sec": 61.4,
+            "load_kw": 17.63, "idle_kw": 9.0, "wasted_kw": 8.63,
+            "monthly_inr": 16570.0, "co2_hr": 7.077,
+        },
+        {
+            "time": "04:45:29", "severity": "MEDIUM",
+            "message": "Lights ON with zero occupancy detected",
+            "action": "Turn OFF ceiling lights. Enable auto-switch.",
+            "room_state": "EMPTY_LIGHTS_ON", "empty_sec": 76.0,
+            "load_kw": 10.46, "idle_kw": 9.0, "wasted_kw": 1.46,
+            "monthly_inr": 2803.0, "co2_hr": 1.197,
+        },
+        {
+            "time": "04:45:37", "severity": "HIGH",
+            "message": "Lights ON with zero occupancy detected",
+            "action": "Turn OFF ceiling lights. Enable auto-switch.",
+            "room_state": "EMPTY_LIGHTS_ON", "empty_sec": 84.1,
+            "load_kw": 18.26, "idle_kw": 9.0, "wasted_kw": 9.26,
+            "monthly_inr": 17779.0, "co2_hr": 7.593,
+        },
+        {
+            "time": "04:45:45", "severity": "HIGH",
+            "message": "Lights ON with zero occupancy detected",
+            "action": "Turn OFF ceiling lights. Enable auto-switch.",
+            "room_state": "EMPTY_LIGHTS_ON", "empty_sec": 92.1,
+            "load_kw": 18.0, "idle_kw": 9.0, "wasted_kw": 9.0,
+            "monthly_inr": 17280.0, "co2_hr": 7.38,
+        },
+    ],
+}
+
+_analysis_videos = [
+    {
+        "id": "vid-1",
+        "title": "Classroom Live Detection",
+        "filename": "classroom_v3_monitored.mp4",
+        "scenario": "live",
+        "description": "Real-time YOLOv8 detection of students entering and leaving a classroom. Tracks occupancy state changes and light waste events.",
+        "duration": "1:01",
+        "date": "2026-03-01",
+        "alerts_fired": 6,
+        "wasted_kwh": 0.82,
+    },
+    {
+        "id": "vid-2",
+        "title": "Ambient Light Monitoring",
+        "filename": "video2_ambient_monitored.mp4",
+        "scenario": "ambient",
+        "description": "Monitoring of a room with only ambient light (lights OFF). Demonstrates that the system correctly identifies no energy waste in this scenario.",
+        "duration": "0:20",
+        "date": "2026-03-01",
+        "alerts_fired": 0,
+        "wasted_kwh": 0.0,
+    },
+    {
+        "id": "vid-3",
+        "title": "Lights ON - Empty Room Alert",
+        "filename": "video3_lights_on_v3_monitored.mp4",
+        "scenario": "waste",
+        "description": "Empty classroom with lights ON. System detects zero occupancy and fires waste alerts with estimated cost and CO2 impact. This is the core energy waste detection scenario.",
+        "duration": "0:31",
+        "date": "2026-03-01",
+        "alerts_fired": 11,
+        "wasted_kwh": 1.995,
+    },
+]
+
+
+@app.route("/api/camera-analysis/log", methods=["GET"])
+def get_camera_analysis_log():
+    """Return the AI camera monitoring log with alert history."""
+    return jsonify(_camera_analysis_log)
+
+
+@app.route("/api/camera-analysis/videos", methods=["GET"])
+def get_camera_analysis_videos():
+    """Return list of analysed videos."""
+    return jsonify(_analysis_videos)
 
 
 # ---------------------------------------------------------------------------
@@ -2764,18 +3072,19 @@ def initialise():
 
         simulator_thread = threading.Thread(target=iot_simulator, daemon=True)
         simulator_thread.start()
-        print("[Setup] IoT simulator thread launched.")
+        print("[Setup] IoT simulator thread launched.", flush=True)
 
         iot_logger_thread = threading.Thread(target=_iot_device_logger, daemon=True)
         iot_logger_thread.start()
-        print("[Setup] IoT device logger thread launched.")
+        print("[Setup] IoT device logger thread launched.", flush=True)
 
-        print(f"[Setup] Storage: {'MongoDB' if USE_MONGO else 'In-Memory (no DB needed)'}")
-        print(f"[Setup] Server: http://{FLASK_HOST}:{FLASK_PORT}")
+        print(f"[Setup] Storage: {'MongoDB' if USE_MONGO else 'In-Memory (no DB needed)'}", flush=True)
+        print(f"[Setup] Server ready on http://{FLASK_HOST}:{FLASK_PORT}", flush=True)
     except Exception as exc:
-        print(f"[Setup] WARNING — initialise() failed: {exc}")
+        print(f"[Setup] WARNING — initialise() failed: {exc}", flush=True)
         import traceback
         traceback.print_exc()
+        sys.stdout.flush()
         # App continues — /health will still respond
 
 

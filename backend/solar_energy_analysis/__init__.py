@@ -5,6 +5,7 @@ from .solar_simulator import (
     estimate_irradiance,
     calculate_solar_yield,
     get_dynamic_solar_kw,
+    _parse_sunrise_sunset_hour,
     P_CAPACITY,
     CLEAR_SKY_GHI,
     PR,

@@ -11,6 +11,8 @@ import {
   Database,
   Gauge,
   LogOut,
+  MessageSquareWarning,
+  Camera,
 } from "lucide-react";
 import AlertBanner from "./AlertBanner";
 import TopMetricsBar from "./TopMetricsBar";
@@ -22,6 +24,8 @@ const navItems = [
   { key: "data",        label: "Data Management",       icon: Database },
   { key: "sustainability", label: "Sustainability KPIs", icon: Gauge },
   { key: "solar",       label: "Solar Energy",          icon: Sun },
+  { key: "complaints",  label: "Complaints",            icon: MessageSquareWarning },
+  { key: "camera",      label: "AI Camera Analysis",    icon: Camera },
   { key: "roi",         label: "ROI Calculator",        icon: Calculator },
 ];
 
@@ -192,7 +196,7 @@ export default function DashboardLayout({
 
         {/* Scrollable body */}
         <main className="flex-1 overflow-y-auto p-6 space-y-6">
-          {activeNav !== "solar" && activeNav !== "roi" && activeNav !== "sustainability" && <TopMetricsBar />}
+          {activeNav !== "solar" && activeNav !== "roi" && activeNav !== "sustainability" && activeNav !== "complaints" && activeNav !== "camera" && <TopMetricsBar />}
           {/* Page content with entrance animation keyed to nav */}
           <div key={activeNav} className="page-enter">
             {children}
