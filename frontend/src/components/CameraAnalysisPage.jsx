@@ -27,6 +27,46 @@ import {
 
 const BASE = process.env.REACT_APP_API_URL || "";
 
+/* Video base URL — always point at the Flask backend directly */
+const VIDEO_BASE = "http://localhost:5000/videos";
+
+/* Hardcoded fallback videos — ensures cards always render even if API is slow */
+const FALLBACK_VIDEOS = [
+  {
+    id: "vid-1",
+    title: "Classroom Live Detection",
+    filename: "classroom_v3_monitored.mp4",
+    scenario: "live",
+    description: "Real-time YOLOv8 detection of students entering and leaving a classroom. Tracks occupancy state changes and light waste events.",
+    duration: "1:01",
+    date: "2026-03-01",
+    alerts_fired: 6,
+    wasted_kwh: 0.82,
+  },
+  {
+    id: "vid-2",
+    title: "Ambient Light Monitoring",
+    filename: "video2_ambient_monitored.mp4",
+    scenario: "ambient",
+    description: "Monitoring of a room with only ambient light (lights OFF). Demonstrates that the system correctly identifies no energy waste.",
+    duration: "0:20",
+    date: "2026-03-01",
+    alerts_fired: 0,
+    wasted_kwh: 0.0,
+  },
+  {
+    id: "vid-3",
+    title: "Lights ON - Empty Room Alert",
+    filename: "video3_lights_on_v3_monitored.mp4",
+    scenario: "waste",
+    description: "Empty classroom with lights ON. System detects zero occupancy and fires waste alerts with estimated cost and CO2 impact.",
+    duration: "0:31",
+    date: "2026-03-01",
+    alerts_fired: 11,
+    wasted_kwh: 1.995,
+  },
+];
+
 /* ── Severity styles ─────────────────────────────────────── */
 const SEV_STYLE = {
   CRITICAL: { bg: "bg-red-500/15", text: "text-red-400", border: "border-red-500/30", dot: "bg-red-400" },
@@ -48,7 +88,7 @@ const SCENARIO_STYLE = {
    ═══════════════════════════════════════════════════════════ */
 export default function CameraAnalysisPage() {
   const [log, setLog] = useState(null);
-  const [videos, setVideos] = useState([]);
+  const [videos, setVideos] = useState(FALLBACK_VIDEOS);
   const [loading, setLoading] = useState(true);
   const [activeVideo, setActiveVideo] = useState(null);
   const [expandedAlert, setExpandedAlert] = useState(null);
@@ -64,7 +104,10 @@ export default function CameraAnalysisPage() {
         fetch(`${BASE}/api/camera-analysis/videos`),
       ]);
       if (logRes.ok) setLog(await logRes.json());
-      if (vidRes.ok) setVideos(await vidRes.json());
+      if (vidRes.ok) {
+        const data = await vidRes.json();
+        if (data && data.length > 0) setVideos(data);
+      }
     } catch (err) {
       console.error("Camera analysis fetch error:", err);
     } finally {
@@ -227,7 +270,11 @@ export default function CameraAnalysisPage() {
                         playsInline
                         preload="auto"
                         className="w-full h-full object-contain"
-                      />
+                        onError={(e) => console.error('Video load error:', vid.filename, e)}
+                      >
+                        <source src={`${VIDEO_BASE}/${vid.filename}`} type="video/mp4" />
+                        Your browser does not support the video tag.
+                      </video>
                       <button
                         onClick={() => setFullscreenVideo(vid)}
                         className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/60 text-white/80 hover:text-white hover:bg-black/80 transition-all"
@@ -305,8 +352,12 @@ export default function CameraAnalysisPage() {
               muted
               playsInline
               preload="auto"
+              onError={(e) => console.error('Fullscreen video error:', fullscreenVideo.filename, e)}
               className="w-full rounded-xl shadow-2xl"
-            />
+            >
+              <source src={`${VIDEO_BASE}/${fullscreenVideo.filename}`} type="video/mp4" />
+              Your browser does not support the video tag.
+            </video>
             <p className="text-center text-sm text-slate-400 mt-3">{fullscreenVideo.title}</p>
           </div>
         </div>

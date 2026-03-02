@@ -2738,17 +2738,20 @@ def api_voice_call():
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# Serve Analysis Videos from local folder
+# Serve Analysis Videos (web-optimised copies in frontend/public/videos)
 # ---------------------------------------------------------------------------
-_VIDEOS_DIR = Path(__file__).resolve().parent / "Analysis Video"
+_VIDEOS_DIR = Path(__file__).resolve().parent / "frontend" / "public" / "videos"
 if not _VIDEOS_DIR.is_dir():
-    _VIDEOS_DIR = Path(__file__).resolve().parent / "frontend" / "public" / "videos"
+    _VIDEOS_DIR = Path(__file__).resolve().parent / "Analysis Video"
 
 
 @app.route("/videos/<path:filename>")
 def serve_video(filename):
-    """Serve analysis video files directly."""
-    return send_from_directory(str(_VIDEOS_DIR), filename)
+    """Serve analysis video files with proper streaming headers."""
+    resp = send_from_directory(str(_VIDEOS_DIR), filename)
+    resp.headers["Accept-Ranges"] = "bytes"
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
 
 
 # Serve React Frontend  (catch-all MUST be after all /api routes)
